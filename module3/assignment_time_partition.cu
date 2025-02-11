@@ -157,24 +157,20 @@ void partitionArrays(const int* h_arr1, const int* h_arr2,
 
 void showSample(const int* h_arr1, const int* h_arr2,
                 const int* h_add, const int* h_sub,
-                const int* h_mul, const int* h_mod1,
-                const int* h_mod2)
+                const int* h_mul, const int* h_mod1)
 {
     printf("\nSample results (first 5):\n");
     for (int i = 0; i < 5; i++) {
         printf("i=%d | arr1=%d arr2=%d | add=%d sub=%d "
-               "mul=%d | modB=%d modNB=%d\n",
+               "mul=%d | modB=%d\n",
                i, h_arr1[i], h_arr2[i], h_add[i],
-               h_sub[i], h_mul[i], h_mod1[i], h_mod2[i]);
+               h_sub[i], h_mul[i], h_mod1[i]);
     }
 }
 
 void timeKernels(int numBlocks, int blockSize, int totalThreads,
-                 int* d_arr1, int* d_arr2, int* d_modOut1,
-                 int* d_modOut2,
-                 int count0, int count1, int count2, int count3,
-                 int* d_p0, int* d_p1, int* d_p2, int* d_p3,
-                 int* d_o0, int* d_o1, int* d_o2, int* d_o3)
+                 int* d_arr1, int* d_arr2, int* d_modOut1, int* d_modOut2,
+                 int* h_arr1, int* h_arr2)
 {
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -191,6 +187,28 @@ void timeKernels(int numBlocks, int blockSize, int totalThreads,
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&msBranch, start, stop);
 
+    int c0, c1, c2, c3;
+    int *h_p0, *h_p1, *h_p2, *h_p3;
+    partitionArrays(h_arr1, h_arr2, totalThreads, c0, c1, c2, c3,
+                    h_p0, h_p1, h_p2, h_p3);
+
+    int *d_p0, *d_p1, *d_p2, *d_p3;
+    int *d_o0, *d_o1, *d_o2, *d_o3;
+
+    cudaMalloc((void**)&d_p0, c0*sizeof(int));
+    cudaMalloc((void**)&d_p1, c1*sizeof(int));
+    cudaMalloc((void**)&d_p2, c2*sizeof(int));
+    cudaMalloc((void**)&d_p3, c3*sizeof(int));
+    cudaMalloc((void**)&d_o0, c0*sizeof(int));
+    cudaMalloc((void**)&d_o1, c1*sizeof(int));
+    cudaMalloc((void**)&d_o2, c2*sizeof(int));
+    cudaMalloc((void**)&d_o3, c3*sizeof(int));
+
+    cudaMemcpy(d_p0, h_p0, c0*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_p1, h_p1, c1*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_p2, h_p2, c2*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_p3, h_p3, c3*sizeof(int), cudaMemcpyHostToDevice);
+
     cudaEventRecord(start);
     for(int i=0; i<10; i++) {
         modNoBranchKernel<<<numBlocks, blockSize>>>(d_arr1,
@@ -202,18 +220,18 @@ void timeKernels(int numBlocks, int blockSize, int totalThreads,
 
     cudaEventRecord(start);
     for(int i=0; i<10; i++) {
-        if(count0>0)
-            modBy1Kernel<<<(count0+blockSize-1)/blockSize, blockSize>>>
-                (d_p0, d_o0, count0);
-        if(count1>0)
-            modBy1Kernel<<<(count1+blockSize-1)/blockSize, blockSize>>>
-                (d_p1, d_o1, count1);
-        if(count2>0)
-            modBy2Kernel<<<(count2+blockSize-1)/blockSize, blockSize>>>
-                (d_p2, d_o2, count2);
-        if(count3>0)
-            modBy3Kernel<<<(count3+blockSize-1)/blockSize, blockSize>>>
-                (d_p3, d_o3, count3);
+        if(c0>0)
+            modBy1Kernel<<<(c0+blockSize-1)/blockSize, blockSize>>>
+                (d_p0, d_o0, c0);
+        if(c1>0)
+            modBy1Kernel<<<(c1+blockSize-1)/blockSize, blockSize>>>
+                (d_p1, d_o1, c1);
+        if(c2>0)
+            modBy2Kernel<<<(c2+blockSize-1)/blockSize, blockSize>>>
+                (d_p2, d_o2, c2);
+        if(c3>0)
+            modBy3Kernel<<<(c3+blockSize-1)/blockSize, blockSize>>>
+                (d_p3, d_o3, c3);
     }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -226,6 +244,20 @@ void timeKernels(int numBlocks, int blockSize, int totalThreads,
 
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+
+    free(h_p0);
+    free(h_p1);
+    free(h_p2);
+    free(h_p3);
+
+    cudaFree(d_p0);
+    cudaFree(d_p1);
+    cudaFree(d_p2);
+    cudaFree(d_p3);
+    cudaFree(d_o0);
+    cudaFree(d_o1);
+    cudaFree(d_o2);
+    cudaFree(d_o3);
 }
 
 // ------------------------------------------------------------------
@@ -245,7 +277,6 @@ int main(int argc, char** argv)
     int* h_subOut = (int*)malloc(bytes);
     int* h_mulOut = (int*)malloc(bytes);
     int* h_mod1   = (int*)malloc(bytes);
-    int* h_mod2   = (int*)malloc(bytes);
 
     fillArrays(h_arr1, h_arr2, totalThreads);
 
@@ -272,8 +303,6 @@ int main(int argc, char** argv)
                                              d_mulOut, totalThreads);
     modBranchKernel<<<numBlocks, blockSize>>>(d_arr1, d_arr2,
                                               d_modOut1, totalThreads);
-    modNoBranchKernel<<<numBlocks, blockSize>>>(d_arr1, d_arr2,
-                                                d_modOut2, totalThreads);
 
     cudaDeviceSynchronize();
 
@@ -281,36 +310,12 @@ int main(int argc, char** argv)
     cudaMemcpy(h_subOut, d_subOut, bytes, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_mulOut, d_mulOut, bytes, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_mod1,   d_modOut1, bytes, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_mod2,   d_modOut2, bytes, cudaMemcpyDeviceToHost);
 
     showSample(h_arr1, h_arr2, h_addOut, h_subOut,
-               h_mulOut, h_mod1, h_mod2);
-
-    int c0, c1, c2, c3;
-    int *h_p0, *h_p1, *h_p2, *h_p3;
-    partitionArrays(h_arr1, h_arr2, totalThreads, c0, c1, c2, c3,
-                    h_p0, h_p1, h_p2, h_p3);
-
-    int *d_p0, *d_p1, *d_p2, *d_p3;
-    int *d_o0, *d_o1, *d_o2, *d_o3;
-
-    cudaMalloc((void**)&d_p0, c0*sizeof(int));
-    cudaMalloc((void**)&d_p1, c1*sizeof(int));
-    cudaMalloc((void**)&d_p2, c2*sizeof(int));
-    cudaMalloc((void**)&d_p3, c3*sizeof(int));
-    cudaMalloc((void**)&d_o0, c0*sizeof(int));
-    cudaMalloc((void**)&d_o1, c1*sizeof(int));
-    cudaMalloc((void**)&d_o2, c2*sizeof(int));
-    cudaMalloc((void**)&d_o3, c3*sizeof(int));
-
-    cudaMemcpy(d_p0, h_p0, c0*sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_p1, h_p1, c1*sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_p2, h_p2, c2*sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_p3, h_p3, c3*sizeof(int), cudaMemcpyHostToDevice);
+               h_mulOut, h_mod1);
 
     timeKernels(numBlocks, blockSize, totalThreads, d_arr1, d_arr2,
-                d_modOut1, d_modOut2, c0, c1, c2, c3, d_p0, d_p1,
-                d_p2, d_p3, d_o0, d_o1, d_o2, d_o3);
+                d_modOut1, d_modOut2, h_arr1, h_arr2);
 
     free(h_arr1);
     free(h_arr2);
@@ -318,11 +323,6 @@ int main(int argc, char** argv)
     free(h_subOut);
     free(h_mulOut);
     free(h_mod1);
-    free(h_mod2);
-    free(h_p0);
-    free(h_p1);
-    free(h_p2);
-    free(h_p3);
 
     cudaFree(d_arr1);
     cudaFree(d_arr2);
@@ -331,14 +331,6 @@ int main(int argc, char** argv)
     cudaFree(d_mulOut);
     cudaFree(d_modOut1);
     cudaFree(d_modOut2);
-    cudaFree(d_p0);
-    cudaFree(d_p1);
-    cudaFree(d_p2);
-    cudaFree(d_p3);
-    cudaFree(d_o0);
-    cudaFree(d_o1);
-    cudaFree(d_o2);
-    cudaFree(d_o3);
 
     cudaDeviceReset();
     return 0;
