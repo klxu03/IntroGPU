@@ -239,13 +239,13 @@ int main(int argc, char** argv)
     setupGridDims(totalThreads, blockSize, numBlocks);
 
     size_t bytes = totalThreads * sizeof(int);
-    int* h_arr1   = (int*)malloc(bytes);
-    int* h_arr2   = (int*)malloc(bytes);
+    int* h_arr1   = (int*)malloc(bytes); // array 1
+    int* h_arr2   = (int*)malloc(bytes); // array 2
     int* h_addOut = (int*)malloc(bytes);
     int* h_subOut = (int*)malloc(bytes);
     int* h_mulOut = (int*)malloc(bytes);
-    int* h_mod1   = (int*)malloc(bytes);
-    int* h_mod2   = (int*)malloc(bytes);
+    int* h_mod1   = (int*)malloc(bytes); // mod with branching output
+    int* h_mod2   = (int*)malloc(bytes); // mod without branching output
 
     fillArrays(h_arr1, h_arr2, totalThreads);
 
@@ -286,12 +286,16 @@ int main(int argc, char** argv)
     showSample(h_arr1, h_arr2, h_addOut, h_subOut,
                h_mulOut, h_mod1, h_mod2);
 
+    /* Counts of how many elements in h_arr2 are 0, 1, 2, 3 respectively */
     int c0, c1, c2, c3;
+    /* Host arrays that store the elements of h_arr1 that correspond to those partition groups */
     int *h_p0, *h_p1, *h_p2, *h_p3;
     partitionArrays(h_arr1, h_arr2, totalThreads, c0, c1, c2, c3,
                     h_p0, h_p1, h_p2, h_p3);
 
+    /* Device arrays that store the elements of h_arr1 that correspond to those partition groups */
     int *d_p0, *d_p1, *d_p2, *d_p3;
+    /* Device arrays that store the results of the mod operations. */
     int *d_o0, *d_o1, *d_o2, *d_o3;
 
     cudaMalloc((void**)&d_p0, c0*sizeof(int));
