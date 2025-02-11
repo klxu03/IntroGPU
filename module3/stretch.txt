@@ -1,0 +1,3 @@
+There seems to be some issues with GPU timing issues in the sample code since the CUDA kernel is launched asynchronously, and the timing may not account for kernel execution time since it may still be running.
+
+There is also a slight issue with timing after only running the program once as one-time overheads could cause the timings to look bad (in case the GPU needs to warm up) or skewed results could alter the results. In my code I ran it 10 times and took the minimum time as the final result.
