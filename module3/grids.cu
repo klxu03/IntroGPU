@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <cuda_runtime.h>
 
-// Kernel: unchanged from your original
+// Kernel (unchanged)
 __global__ void what_is_my_id_2d_A(
     unsigned int * const block_x,
     unsigned int * const block_y,
@@ -18,24 +18,24 @@ __global__ void what_is_my_id_2d_A(
     const unsigned int idy = (blockIdx.y * blockDim.y) + threadIdx.y;
     const unsigned int thread_idx = ((gridDim.x * blockDim.x) * idy) + idx;
 
-    block_x[thread_idx]   = blockIdx.x;
-    block_y[thread_idx]   = blockIdx.y;
-    thread[thread_idx]    = threadIdx.x;
-    calc_thread[thread_idx] = thread_idx;
-    x_thread[thread_idx]  = idx;
-    y_thread[thread_idx]  = idy;
-    grid_dimx[thread_idx] = gridDim.x;
-    block_dimx[thread_idx]= blockDim.x;
-    grid_dimy[thread_idx] = gridDim.y;
-    block_dimy[thread_idx]= blockDim.y;
+    block_x[thread_idx]    = blockIdx.x;
+    block_y[thread_idx]    = blockIdx.y;
+    thread[thread_idx]     = threadIdx.x;
+    calc_thread[thread_idx]= thread_idx;
+    x_thread[thread_idx]   = idx;
+    y_thread[thread_idx]   = idy;
+    grid_dimx[thread_idx]  = gridDim.x;
+    block_dimx[thread_idx] = blockDim.x;
+    grid_dimy[thread_idx]  = gridDim.y;
+    block_dimy[thread_idx] = blockDim.y;
 }
 
-// Increase the problem size for timing tests
+// Increase problem size for timing tests
 #define ARRAY_SIZE_X 256
 #define ARRAY_SIZE_Y 256
 #define ARRAY_SIZE_IN_BYTES ((ARRAY_SIZE_X) * (ARRAY_SIZE_Y) * (sizeof(unsigned int)))
 
-// Declare CPU arrays (for a large problem, consider dynamic allocation)
+// Declare CPU arrays (statically, for demonstration)
 unsigned int cpu_block_x[ARRAY_SIZE_Y][ARRAY_SIZE_X];
 unsigned int cpu_block_y[ARRAY_SIZE_Y][ARRAY_SIZE_X];
 unsigned int cpu_thread[ARRAY_SIZE_Y][ARRAY_SIZE_X];
@@ -49,17 +49,16 @@ unsigned int cpu_block_dimy[ARRAY_SIZE_Y][ARRAY_SIZE_X];
 
 int main(void)
 {
-    // --- Define different thread/block configurations ---
-    // Configuration A:
+    // --- Define three grid/block configurations ---
+    // Configuration A: 32x4 threads per block; grid: 1x4 blocks
     const dim3 threads_rect(32, 4);
     const dim3 blocks_rect(1, 4);
     
-    // Configuration B:
+    // Configuration B: 16x8 threads per block; grid: 2x2 blocks
     const dim3 threads_square(16, 8);
     const dim3 blocks_square(2, 2);
     
-    // Configuration C: (Optimal occupancy test for a 256x256 grid)
-    // Total threads = 256x256, so blocks = (256/16, 256/16) = (16,16) with threads per block (16,16)
+    // Configuration C: 16x16 threads per block; grid: (256/16)x(256/16) = 16x16 blocks
     const dim3 threads_16x16(16, 16);
     const dim3 blocks_16x16(ARRAY_SIZE_X / threads_16x16.x, ARRAY_SIZE_Y / threads_16x16.y);
 
@@ -84,45 +83,49 @@ int main(void)
     cudaMalloc((void **)&gpu_grid_dimy, ARRAY_SIZE_IN_BYTES);
     cudaMalloc((void **)&gpu_block_dimy, ARRAY_SIZE_IN_BYTES);
 
-    // Loop over kernel configurations
+    // Loop over the three configurations (kernel index 0,1,2)
     for(int kernel = 0; kernel < 3; kernel++)
     {
-        // Record start time
-        cudaEventRecord(start, 0);
-        
-        switch(kernel)
+        float totalTime = 0.0f;
+        // Run 10 iterations for each configuration
+        for (int iter = 0; iter < 10; iter++)
         {
-            case 0:
-                // Configuration A: threads_rect / blocks_rect
-                what_is_my_id_2d_A<<<blocks_rect, threads_rect>>>(gpu_block_x, gpu_block_y,
-                      gpu_thread, gpu_calc_thread, gpu_xthread, gpu_ythread,
-                      gpu_grid_dimx, gpu_block_dimx, gpu_grid_dimy, gpu_block_dimy);
-                break;
-            case 1:
-                // Configuration B: threads_square / blocks_square
-                what_is_my_id_2d_A<<<blocks_square, threads_square>>>(gpu_block_x, gpu_block_y,
-                      gpu_thread, gpu_calc_thread, gpu_xthread, gpu_ythread,
-                      gpu_grid_dimx, gpu_block_dimx, gpu_grid_dimy, gpu_block_dimy);
-                break;
-            case 2:
-                // Configuration C: threads_16x16 / blocks_16x16
-                what_is_my_id_2d_A<<<blocks_16x16, threads_16x16>>>(gpu_block_x, gpu_block_y,
-                      gpu_thread, gpu_calc_thread, gpu_xthread, gpu_ythread,
-                      gpu_grid_dimx, gpu_block_dimx, gpu_grid_dimy, gpu_block_dimy);
-                break;
-            default:
-                exit(1);
+            cudaEventRecord(start, 0);
+            switch(kernel)
+            {
+                case 0:
+                    // Configuration A
+                    what_is_my_id_2d_A<<<blocks_rect, threads_rect>>>(gpu_block_x, gpu_block_y,
+                        gpu_thread, gpu_calc_thread, gpu_xthread, gpu_ythread,
+                        gpu_grid_dimx, gpu_block_dimx, gpu_grid_dimy, gpu_block_dimy);
+                    break;
+                case 1:
+                    // Configuration B
+                    what_is_my_id_2d_A<<<blocks_square, threads_square>>>(gpu_block_x, gpu_block_y,
+                        gpu_thread, gpu_calc_thread, gpu_xthread, gpu_ythread,
+                        gpu_grid_dimx, gpu_block_dimx, gpu_grid_dimy, gpu_block_dimy);
+                    break;
+                case 2:
+                    // Configuration C
+                    what_is_my_id_2d_A<<<blocks_16x16, threads_16x16>>>(gpu_block_x, gpu_block_y,
+                        gpu_thread, gpu_calc_thread, gpu_xthread, gpu_ythread,
+                        gpu_grid_dimx, gpu_block_dimx, gpu_grid_dimy, gpu_block_dimy);
+                    break;
+                default:
+                    exit(1);
+            }
+            cudaEventRecord(stop, 0);
+            cudaEventSynchronize(stop);
+            
+            float elapsedTime = 0.0f;
+            cudaEventElapsedTime(&elapsedTime, start, stop);
+            totalTime += elapsedTime;
         }
         
-        // Record stop time and synchronize
-        cudaEventRecord(stop, 0);
-        cudaEventSynchronize(stop);
+        // Compute average time over 10 iterations
+        float averageTime = totalTime / 10.0f;
         
-        float elapsedTime;
-        cudaEventElapsedTime(&elapsedTime, start, stop);
-        printf("\nKernel %d execution time: %f ms\n", kernel, elapsedTime);
-        
-        // Copy results back to CPU (if needed for validation/printing)
+        // Copy results back from GPU (from the final iteration)
         cudaMemcpy(cpu_block_x, gpu_block_x, ARRAY_SIZE_IN_BYTES, cudaMemcpyDeviceToHost);
         cudaMemcpy(cpu_block_y, gpu_block_y, ARRAY_SIZE_IN_BYTES, cudaMemcpyDeviceToHost);
         cudaMemcpy(cpu_thread, gpu_thread, ARRAY_SIZE_IN_BYTES, cudaMemcpyDeviceToHost);
@@ -134,13 +137,13 @@ int main(void)
         cudaMemcpy(cpu_grid_dimy, gpu_grid_dimy, ARRAY_SIZE_IN_BYTES, cudaMemcpyDeviceToHost);
         cudaMemcpy(cpu_block_dimy, gpu_block_dimy, ARRAY_SIZE_IN_BYTES, cudaMemcpyDeviceToHost);
         
-        // (Optional) Print a few entries to validate kernel execution
+        printf("\nKernel %d average execution time over 10 iterations: %f ms\n", kernel, averageTime);
         printf("First element details: CT: %2u BKX: %1u BKY: %1u TID: %2u XTID: %2u YTID: %2u\n",
                cpu_calc_thread[0][0], cpu_block_x[0][0], cpu_block_y[0][0],
                cpu_thread[0][0], cpu_xthread[0][0], cpu_ythread[0][0]);
     }
     
-    // Clean up GPU memory and events
+    // Free GPU memory and destroy events
     cudaFree(gpu_block_x);
     cudaFree(gpu_block_y);
     cudaFree(gpu_thread);
