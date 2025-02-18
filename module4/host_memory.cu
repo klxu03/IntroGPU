@@ -1,89 +1,151 @@
-/* *
- * Modified SAXPY sample for improved timing output and experiment logging.
- * Excessive per-element printing has been removed. Instead, a loop of experiments
- * on varying vector sizes is run, and key timings (kernel time and max error) are logged.
- */
+/******************************************************************************
+ * host_memory_experiments.cu
+ *
+ * Demonstrates a SAXPY operation with multiple vector sizes. Collects kernel
+ * timing and optional CPU timing, printing out results in CSV format.
+ ******************************************************************************/
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <cuda_runtime.h>
+#include <math.h>
 
-// SAXPY kernel from NVIDIA samples.
-__global__
-void saxpy(int n, float a, float *x, float *y)
+// -----------------------------------------------------------------------------
+// Error-checking macro
+// -----------------------------------------------------------------------------
+#define CUDA_CHECK(call) do {                                      \
+    cudaError_t err = call;                                        \
+    if (err != cudaSuccess) {                                      \
+        fprintf(stderr, "CUDA error in %s at line %d: %s\n",       \
+                __FILE__, __LINE__, cudaGetErrorString(err));      \
+        exit(err);                                                 \
+    }                                                              \
+} while(0)
+
+// -----------------------------------------------------------------------------
+// SAXPY kernel
+// -----------------------------------------------------------------------------
+__global__ void saxpy_kernel(int n, float a, float *x, float *y)
 {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
-    if (i < n)
+    if (i < n) {
         y[i] = a*x[i] + y[i];
+    }
 }
 
+// -----------------------------------------------------------------------------
+// CPU SAXPY (optional reference)
+// -----------------------------------------------------------------------------
+void saxpy_cpu(int n, float a, const float *x, float *y)
+{
+    for (int i = 0; i < n; i++) {
+        y[i] = a*x[i] + y[i];
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Time helper
+// -----------------------------------------------------------------------------
+static inline cudaEvent_t get_time(void)
+{
+    cudaEvent_t time;
+    cudaEventCreate(&time);
+    cudaEventRecord(time, 0);
+    cudaEventSynchronize(time);
+    return time;
+}
+
+static inline float elapsed_time(cudaEvent_t start, cudaEvent_t end)
+{
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, start, end);
+    return ms;
+}
+
+// -----------------------------------------------------------------------------
+// Main
+// -----------------------------------------------------------------------------
 int main(void)
 {
-    // Define a few experiment sizes (power-of-two sizes)
-    const int num_experiments = 4;
-    int sizes[num_experiments] = {1 << 18, 1 << 19, 1 << 20, 1 << 21};
+    // We'll test vector sizes from 2^16 to 2^23, for example
+    // (65,536 up to ~8 million). Adjust as you like.
+    int sizes[] = {1<<16, 1<<17, 1<<18, 1<<19, 1<<20, 1<<21, 1<<22, 1<<23};
 
-    // Log CSV header: Experiment, VectorSize, KernelTime(ms), MaxError
-    printf("Experiment,VectorSize,KernelTime(ms),MaxError\n");
+    // Print CSV header
+    printf("VectorSize,GPUSaxpyTime(ms),CPUSaxpyTime(ms),MaxError\n");
 
-    for (int exp = 0; exp < num_experiments; exp++){
-        int N = sizes[exp];
-        float *x, *y, *d_x, *d_y;
-        size_t size_in_bytes = N * sizeof(float);
+    for (int s = 0; s < (int)(sizeof(sizes)/sizeof(sizes[0])); s++) {
+        int N = sizes[s];
+        float a = 2.0f;
 
-        // Allocate host memory
-        x = (float*)malloc(size_in_bytes);
-        y = (float*)malloc(size_in_bytes);
+        // Allocate host arrays
+        float *h_x = (float*) malloc(N * sizeof(float));
+        float *h_y = (float*) malloc(N * sizeof(float));
+        float *h_y_cpu = (float*) malloc(N * sizeof(float)); // separate copy for CPU test
 
-        // Allocate device memory
-        cudaMalloc(&d_x, size_in_bytes); 
-        cudaMalloc(&d_y, size_in_bytes);
-
-        // Initialize host arrays
+        // Initialize data
         for (int i = 0; i < N; i++) {
-            x[i] = 1.0f;
-            y[i] = 2.0f;
+            h_x[i] = 1.0f;
+            h_y[i] = 2.0f;
+            h_y_cpu[i] = 2.0f;  // same initial data for CPU test
         }
 
-        // Copy data to device
-        cudaMemcpy(d_x, x, size_in_bytes, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_y, y, size_in_bytes, cudaMemcpyHostToDevice);
+        // Allocate device arrays
+        float *d_x = nullptr, *d_y = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_x, N*sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_y, N*sizeof(float)));
 
-        // Setup timing events
-        cudaEvent_t start, stop;
-        cudaEventCreate(&start);
-        cudaEventCreate(&stop);
-        cudaEventRecord(start, 0);
+        // Copy to device
+        CUDA_CHECK(cudaMemcpy(d_x, h_x, N*sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_y, h_y, N*sizeof(float), cudaMemcpyHostToDevice));
 
-        // Launch SAXPY: use enough threads to cover all elements.
-        saxpy<<<(N+255)/256, 256>>>(N, 2.0f, d_x, d_y);
+        // ----------------------------
+        // Time the GPU SAXPY
+        // ----------------------------
+        dim3 block(256);
+        dim3 grid((N + block.x - 1)/block.x);
 
-        cudaEventRecord(stop, 0);
-        cudaEventSynchronize(stop);
-        float kernelTime = 0.0f;
-        cudaEventElapsedTime(&kernelTime, start, stop);
+        cudaEvent_t start_gpu = get_time();
+        saxpy_kernel<<<grid, block>>>(N, a, d_x, d_y);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        cudaEvent_t end_gpu = get_time();
 
-        // Copy result back to host
-        cudaMemcpy(y, d_y, size_in_bytes, cudaMemcpyDeviceToHost);
+        float gpuTime = elapsed_time(start_gpu, end_gpu);
 
-        // Verify the result: expected value is 2 + 2*1 = 4 for every element.
+        // Copy back
+        CUDA_CHECK(cudaMemcpy(h_y, d_y, N*sizeof(float), cudaMemcpyDeviceToHost));
+
+        // ----------------------------
+        // Time the CPU SAXPY
+        // ----------------------------
+        cudaEvent_t start_cpu = get_time();
+        saxpy_cpu(N, a, h_x, h_y_cpu);
+        cudaEvent_t end_cpu = get_time();
+
+        float cpuTime = elapsed_time(start_cpu, end_cpu);
+
+        // ----------------------------
+        // Check max error
+        // ----------------------------
         float maxError = 0.0f;
-        for (int i = 0; i < N; i++){
-            float error = fabs(y[i] - 4.0f);
-            if(error > maxError)
-                maxError = error;
+        for (int i = 0; i < N; i++) {
+            float diff = fabs(h_y[i] - h_y_cpu[i]);
+            if (diff > maxError) {
+                maxError = diff;
+            }
         }
 
-        // Log experiment results in CSV format.
-        printf("%d,%d,%.3f,%.5f\n", exp, N, kernelTime, maxError);
+        // Print results in CSV
+        printf("%d,%.4f,%.4f,%.5f\n", N, gpuTime, cpuTime, maxError);
 
-        // Cleanup events and memory
-        cudaEventDestroy(start);
-        cudaEventDestroy(stop);
-        cudaFree(d_x);
-        cudaFree(d_y);
-        free(x);
-        free(y);
+        // Cleanup
+        free(h_x);
+        free(h_y);
+        free(h_y_cpu);
+        CUDA_CHECK(cudaFree(d_x));
+        CUDA_CHECK(cudaFree(d_y));
     }
 
+    cudaDeviceReset();
     return 0;
 }
