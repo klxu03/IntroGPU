@@ -1,6 +1,7 @@
 #include <stdio.h>
+#include <cuda_runtime.h> // Added to support CUDA runtime functions
 
-//From https://devblogs.nvidia.com/parallelforall/easy-introduction-cuda-c-and-c/
+// From https://devblogs.nvidia.com/parallelforall/easy-introduction-cuda-c-and-c/
 
 __global__
 void saxpy(int n, float a, float *x, float *y)
@@ -27,15 +28,30 @@ int main(void)
   cudaMemcpy(d_x, x, N*sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(d_y, y, N*sizeof(float), cudaMemcpyHostToDevice);
 
+  // Timing the SAXPY kernel execution using CUDA events
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, 0);
+
   // Perform SAXPY on 1M elements
   saxpy<<<(N+255)/256, 256>>>(N, 2.0f, d_x, d_y);
+
+  cudaEventRecord(stop, 0);
+  cudaEventSynchronize(stop);
+  float kernelTime = 0.0f;
+  cudaEventElapsedTime(&kernelTime, start, stop);
+  printf("SAXPY kernel execution time: %f ms\n", kernelTime);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
 
   cudaMemcpy(y, d_y, N*sizeof(float), cudaMemcpyDeviceToHost);
 
   float maxError = 0.0f;
   for (int i = 0; i < N; i++){
     maxError = max(maxError, abs(y[i]-4.0f));
-    printf("y[%d]=%f\n",i,y[i]);
+    printf("y[%d]=%f\n", i, y[i]);
   }
   printf("Max error: %f\n", maxError);
 
@@ -43,4 +59,6 @@ int main(void)
   cudaFree(d_y);
   free(x);
   free(y);
+
+  return 0;
 }
