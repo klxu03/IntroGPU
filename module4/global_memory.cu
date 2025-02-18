@@ -1,24 +1,18 @@
 /******************************************************************************
- * global_memory.cu
+ * global_memory_experiments.cu
  *
- * Revised experiments for interleaved vs. non-interleaved memory accesses.
- * This version runs tests for array sizes from 256 up to 131072 (without 
- * exceeding 262144) and for several iteration counts.
- *
- * Build with: nvcc -O2 -o global_memory.exe global_memory.cu
- *****************************************************************************/
+ * Demonstrates interleaved vs. non-interleaved memory access on CPU and GPU
+ * with larger array sizes (up to 262144 elements) and various iteration counts.
+ * CPU timings are measured using clock_gettime for better resolution of linear scaling.
+ ******************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <cuda_runtime.h>
 #include <assert.h>
 
-// Define minimum and maximum number of elements for experiments
-#define MIN_ELEMENTS 256
-#define MAX_ELEMENTS 131072  // Do not exceed 262144 to avoid segfaults
-
-// Iteration counts to test
-const unsigned int iterationsArray[] = {1, 2, 4, 8, 16, 32};
+#define MAX_SIZE 262144  // Maximum number of elements to avoid segfaults
 
 typedef struct {
     unsigned int a;
@@ -34,25 +28,18 @@ typedef struct {
     unsigned int *d;
 } NON_INTERLEAVED_T;
 
-// Timing helpers using CUDA events
-__host__ cudaEvent_t get_time(void) {
-    cudaEvent_t time;
-    cudaEventCreate(&time);
-    cudaEventRecord(time, 0);
-    cudaEventSynchronize(time);
-    return time;
+// CPU timing helper using clock_gettime
+double cpu_time_diff(struct timespec start, struct timespec end) {
+    double start_ms = start.tv_sec * 1000.0 + start.tv_nsec / 1e6;
+    double end_ms   = end.tv_sec   * 1000.0 + end.tv_nsec   / 1e6;
+    return end_ms - start_ms;
 }
 
-__host__ float elapsed_time(cudaEvent_t start, cudaEvent_t end) {
-    float ms = 0.0f;
-    cudaEventElapsedTime(&ms, start, end);
-    return ms;
-}
-
-// CPU interleaved addition: loops over elements and iterations
-__host__ float cpu_add_interleaved(INTERLEAVED_T *dest, const INTERLEAVED_T *src,
-                                   unsigned int num_elements, unsigned int iter) {
-    cudaEvent_t start = get_time();
+// CPU addition for interleaved data (measured with clock_gettime)
+double cpu_add_interleaved(INTERLEAVED_T *dest, const INTERLEAVED_T *src,
+                           unsigned int num_elements, unsigned int iter) {
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     for (unsigned int i = 0; i < num_elements; i++) {
         for (unsigned int j = 0; j < iter; j++) {
             dest[i].a += src[i].a;
@@ -61,14 +48,15 @@ __host__ float cpu_add_interleaved(INTERLEAVED_T *dest, const INTERLEAVED_T *src
             dest[i].d += src[i].d;
         }
     }
-    cudaEvent_t end = get_time();
-    return elapsed_time(start, end);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    return cpu_time_diff(start, end);
 }
 
-// CPU non-interleaved addition: operates on 4 separate arrays
-__host__ float cpu_add_noninterleaved(NON_INTERLEAVED_T *dest, NON_INTERLEAVED_T *src,
-                                      unsigned int num_elements, unsigned int iter) {
-    cudaEvent_t start = get_time();
+// CPU addition for non-interleaved data (measured with clock_gettime)
+double cpu_add_noninterleaved(NON_INTERLEAVED_T *dest, const NON_INTERLEAVED_T *src,
+                              unsigned int num_elements, unsigned int iter) {
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     for (unsigned int i = 0; i < num_elements; i++) {
         for (unsigned int j = 0; j < iter; j++) {
             dest->a[i] += src->a[i];
@@ -77,15 +65,15 @@ __host__ float cpu_add_noninterleaved(NON_INTERLEAVED_T *dest, NON_INTERLEAVED_T
             dest->d[i] += src->d[i];
         }
     }
-    cudaEvent_t end = get_time();
-    return elapsed_time(start, end);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    return cpu_time_diff(start, end);
 }
 
 // GPU kernel for interleaved addition
-__global__ void gpu_add_interleaved_kernel(INTERLEAVED_T *dest, const INTERLEAVED_T *src,
-                                             unsigned int num_elements, unsigned int iter) {
+__global__ void add_kernel_interleaved(INTERLEAVED_T *dest, const INTERLEAVED_T *src,
+                                       unsigned int num_elements, unsigned int iter) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if(tid < num_elements) {
+    if (tid < num_elements) {
         for (unsigned int i = 0; i < iter; i++) {
             dest[tid].a += src[tid].a;
             dest[tid].b += src[tid].b;
@@ -96,10 +84,10 @@ __global__ void gpu_add_interleaved_kernel(INTERLEAVED_T *dest, const INTERLEAVE
 }
 
 // GPU kernel for non-interleaved addition
-__global__ void gpu_add_noninterleaved_kernel(NON_INTERLEAVED_T dest, NON_INTERLEAVED_T src,
-                                                unsigned int num_elements, unsigned int iter) {
+__global__ void add_kernel_noninterleaved(NON_INTERLEAVED_T dest, NON_INTERLEAVED_T src,
+                                          unsigned int num_elements, unsigned int iter) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if(tid < num_elements) {
+    if (tid < num_elements) {
         for (unsigned int i = 0; i < iter; i++) {
             dest.a[tid] += src.a[tid];
             dest.b[tid] += src.b[tid];
@@ -109,53 +97,52 @@ __global__ void gpu_add_noninterleaved_kernel(NON_INTERLEAVED_T dest, NON_INTERL
     }
 }
 
-// GPU interleaved addition function
-__host__ float gpu_add_interleaved(INTERLEAVED_T *host_dest, const INTERLEAVED_T *host_src,
-                                   unsigned int num_elements, unsigned int iter) {
+// GPU addition for interleaved data (using CUDA events)
+double gpu_add_interleaved(INTERLEAVED_T *h_dest, const INTERLEAVED_T *h_src,
+                           unsigned int num_elements, unsigned int iter) {
     size_t bytes = num_elements * sizeof(INTERLEAVED_T);
-    INTERLEAVED_T *d_dest = NULL, *d_src = NULL;
+    INTERLEAVED_T *d_dest, *d_src;
     cudaMalloc((void**)&d_dest, bytes);
     cudaMalloc((void**)&d_src, bytes);
-
-    cudaMemcpy(d_src, host_src, bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_src, h_src, bytes, cudaMemcpyHostToDevice);
     cudaMemset(d_dest, 0, bytes);
 
     dim3 block(256);
     dim3 grid((num_elements + block.x - 1) / block.x);
-
-    cudaEvent_t start = get_time();
-    gpu_add_interleaved_kernel<<<grid, block>>>(d_dest, d_src, num_elements, iter);
-    cudaDeviceSynchronize();
-    cudaEvent_t end = get_time();
-
-    float ms = elapsed_time(start, end);
-    cudaMemcpy(host_dest, d_dest, bytes, cudaMemcpyDeviceToHost);
-
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    add_kernel_interleaved<<<grid, block>>>(d_dest, d_src, num_elements, iter);
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float ms;
+    cudaEventElapsedTime(&ms, start, stop);
+    cudaMemcpy(h_dest, d_dest, bytes, cudaMemcpyDeviceToHost);
     cudaFree(d_dest);
     cudaFree(d_src);
-    return ms;
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    return (double)ms;
 }
 
-// GPU non-interleaved addition function
-__host__ float gpu_add_noninterleaved(NON_INTERLEAVED_T *host_dest, NON_INTERLEAVED_T *host_src,
-                                      unsigned int num_elements, unsigned int iter) {
+// GPU addition for non-interleaved data (using CUDA events)
+double gpu_add_noninterleaved(NON_INTERLEAVED_T *h_dest, const NON_INTERLEAVED_T *h_src,
+                              unsigned int num_elements, unsigned int iter) {
     size_t bytes = num_elements * sizeof(unsigned int);
     NON_INTERLEAVED_T d_dest, d_src;
     cudaMalloc((void**)&d_dest.a, bytes);
     cudaMalloc((void**)&d_dest.b, bytes);
     cudaMalloc((void**)&d_dest.c, bytes);
     cudaMalloc((void**)&d_dest.d, bytes);
-
     cudaMalloc((void**)&d_src.a, bytes);
     cudaMalloc((void**)&d_src.b, bytes);
     cudaMalloc((void**)&d_src.c, bytes);
     cudaMalloc((void**)&d_src.d, bytes);
-
-    cudaMemcpy(d_src.a, host_src->a, bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_src.b, host_src->b, bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_src.c, host_src->c, bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_src.d, host_src->d, bytes, cudaMemcpyHostToDevice);
-
+    cudaMemcpy(d_src.a, h_src->a, bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_src.b, h_src->b, bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_src.c, h_src->c, bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_src.d, h_src->d, bytes, cudaMemcpyHostToDevice);
     cudaMemset(d_dest.a, 0, bytes);
     cudaMemset(d_dest.b, 0, bytes);
     cudaMemset(d_dest.c, 0, bytes);
@@ -163,142 +150,100 @@ __host__ float gpu_add_noninterleaved(NON_INTERLEAVED_T *host_dest, NON_INTERLEA
 
     dim3 block(256);
     dim3 grid((num_elements + block.x - 1) / block.x);
-
-    cudaEvent_t start = get_time();
-    gpu_add_noninterleaved_kernel<<<grid, block>>>(d_dest, d_src, num_elements, iter);
-    cudaDeviceSynchronize();
-    cudaEvent_t end = get_time();
-
-    float ms = elapsed_time(start, end);
-    cudaMemcpy(host_dest->a, d_dest.a, bytes, cudaMemcpyDeviceToHost);
-    cudaMemcpy(host_dest->b, d_dest.b, bytes, cudaMemcpyDeviceToHost);
-    cudaMemcpy(host_dest->c, d_dest.c, bytes, cudaMemcpyDeviceToHost);
-    cudaMemcpy(host_dest->d, d_dest.d, bytes, cudaMemcpyDeviceToHost);
-
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    add_kernel_noninterleaved<<<grid, block>>>(d_dest, d_src, num_elements, iter);
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float ms;
+    cudaEventElapsedTime(&ms, start, stop);
+    cudaMemcpy(h_dest->a, d_dest.a, bytes, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_dest->b, d_dest.b, bytes, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_dest->c, d_dest.c, bytes, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_dest->d, d_dest.d, bytes, cudaMemcpyDeviceToHost);
     cudaFree(d_dest.a); cudaFree(d_dest.b); cudaFree(d_dest.c); cudaFree(d_dest.d);
-    cudaFree(d_src.a);  cudaFree(d_src.b);  cudaFree(d_src.c);  cudaFree(d_src.d);
-
-    return ms;
-}
-
-// Global bitreverse kernel (same as the original)
-__global__ void bitreverse_kernel(unsigned int *data, unsigned int size) {
-    unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid < size) {
-        unsigned int x = data[tid];
-        x = ((0xf0f0f0f0 & x) >> 4) | ((0x0f0f0f0f & x) << 4);
-        x = ((0xcccccccc & x) >> 2) | ((0x33333333 & x) << 2);
-        x = ((0xaaaaaaaa & x) >> 1) | ((0x55555555 & x) << 1);
-        data[tid] = x;
-    }
+    cudaFree(d_src.a); cudaFree(d_src.b); cudaFree(d_src.c); cudaFree(d_src.d);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    return (double)ms;
 }
 
 int main(void) {
     printf("=== Global Memory Experiments: Interleaved vs Non-Interleaved ===\n");
     printf("CSV Format: num_elements,iterations,cpu_interleaved_ms,gpu_interleaved_ms,cpu_noninterleaved_ms,gpu_noninterleaved_ms\n");
-    
-    // Test array sizes from MIN_ELEMENTS to MAX_ELEMENTS doubling each time.
-    for (unsigned int num_elements = MIN_ELEMENTS; num_elements <= MAX_ELEMENTS; num_elements *= 2) {
-        // Allocate host arrays for interleaved layout
-        INTERLEAVED_T *host_src_inter = (INTERLEAVED_T*) malloc(num_elements * sizeof(INTERLEAVED_T));
-        INTERLEAVED_T *host_dest_inter = (INTERLEAVED_T*) malloc(num_elements * sizeof(INTERLEAVED_T));
-        
-        // Allocate host arrays for non-interleaved layout
-        NON_INTERLEAVED_T host_src_non, host_dest_non;
-        host_src_non.a = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
-        host_src_non.b = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
-        host_src_non.c = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
-        host_src_non.d = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
-        host_dest_non.a = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
-        host_dest_non.b = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
-        host_dest_non.c = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
-        host_dest_non.d = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
-        
-        // Initialize both sets of arrays with sample data
+
+    unsigned int sizes[] = {256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, MAX_SIZE};
+    unsigned int iters[]  = {1, 2, 4, 8, 16, 32};
+
+    for (unsigned int s = 0; s < sizeof(sizes)/sizeof(sizes[0]); s++) {
+        unsigned int num_elements = sizes[s];
+
+        // Allocate and initialize interleaved data on host
+        INTERLEAVED_T *h_src_i = (INTERLEAVED_T*) malloc(num_elements * sizeof(INTERLEAVED_T));
+        INTERLEAVED_T *h_dest_i = (INTERLEAVED_T*) malloc(num_elements * sizeof(INTERLEAVED_T));
+        // Allocate and initialize non-interleaved data on host
+        NON_INTERLEAVED_T h_src_n, h_dest_n;
+        h_src_n.a = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
+        h_src_n.b = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
+        h_src_n.c = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
+        h_src_n.d = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
+        h_dest_n.a = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
+        h_dest_n.b = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
+        h_dest_n.c = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
+        h_dest_n.d = (unsigned int*) malloc(num_elements * sizeof(unsigned int));
+
         for (unsigned int i = 0; i < num_elements; i++) {
-            host_src_inter[i].a = i;
-            host_src_inter[i].b = i + 1;
-            host_src_inter[i].c = i + 2;
-            host_src_inter[i].d = i + 3;
-            host_dest_inter[i].a = 0;
-            host_dest_inter[i].b = 0;
-            host_dest_inter[i].c = 0;
-            host_dest_inter[i].d = 0;
-            
-            host_src_non.a[i] = i;
-            host_src_non.b[i] = i + 1;
-            host_src_non.c[i] = i + 2;
-            host_src_non.d[i] = i + 3;
-            host_dest_non.a[i] = 0;
-            host_dest_non.b[i] = 0;
-            host_dest_non.c[i] = 0;
-            host_dest_non.d[i] = 0;
+            h_src_i[i].a = i;
+            h_src_i[i].b = i + 1;
+            h_src_i[i].c = i + 2;
+            h_src_i[i].d = i + 3;
+            h_dest_i[i].a = 0;
+            h_dest_i[i].b = 0;
+            h_dest_i[i].c = 0;
+            h_dest_i[i].d = 0;
+
+            h_src_n.a[i] = i;
+            h_src_n.b[i] = i + 1;
+            h_src_n.c[i] = i + 2;
+            h_src_n.d[i] = i + 3;
+            h_dest_n.a[i] = 0;
+            h_dest_n.b[i] = 0;
+            h_dest_n.c[i] = 0;
+            h_dest_n.d[i] = 0;
         }
-        
-        // Loop over the iteration counts
-        for (unsigned int it = 0; it < sizeof(iterationsArray)/sizeof(iterationsArray[0]); it++) {
-            unsigned int iter = iterationsArray[it];
-            
-            float cpu_int_time = cpu_add_interleaved(host_dest_inter, host_src_inter, num_elements, iter);
-            // Reset interleaved destination array to zero
+
+        for (unsigned int it = 0; it < sizeof(iters)/sizeof(iters[0]); it++) {
+            unsigned int iter = iters[it];
+
+            double cpu_int_time = cpu_add_interleaved(h_dest_i, h_src_i, num_elements, iter);
+            // Reset destination for a fair test
             for (unsigned int i = 0; i < num_elements; i++) {
-                host_dest_inter[i].a = 0;
-                host_dest_inter[i].b = 0;
-                host_dest_inter[i].c = 0;
-                host_dest_inter[i].d = 0;
+                h_dest_i[i].a = 0;
+                h_dest_i[i].b = 0;
+                h_dest_i[i].c = 0;
+                h_dest_i[i].d = 0;
             }
-            float gpu_int_time = gpu_add_interleaved(host_dest_inter, host_src_inter, num_elements, iter);
-            
-            float cpu_nint_time = cpu_add_noninterleaved(&host_dest_non, &host_src_non, num_elements, iter);
-            // Reset non-interleaved destination arrays to zero
+            double gpu_int_time = gpu_add_interleaved(h_dest_i, h_src_i, num_elements, iter);
+
+            double cpu_nint_time = cpu_add_noninterleaved(&h_dest_n, &h_src_n, num_elements, iter);
             for (unsigned int i = 0; i < num_elements; i++) {
-                host_dest_non.a[i] = 0;
-                host_dest_non.b[i] = 0;
-                host_dest_non.c[i] = 0;
-                host_dest_non.d[i] = 0;
+                h_dest_n.a[i] = 0;
+                h_dest_n.b[i] = 0;
+                h_dest_n.c[i] = 0;
+                h_dest_n.d[i] = 0;
             }
-            float gpu_nint_time = gpu_add_noninterleaved(&host_dest_non, &host_src_non, num_elements, iter);
-            
+            double gpu_nint_time = gpu_add_noninterleaved(&h_dest_n, &h_src_n, num_elements, iter);
+
             printf("%u,%u,%.4f,%.4f,%.4f,%.4f\n",
                    num_elements, iter, cpu_int_time, gpu_int_time, cpu_nint_time, gpu_nint_time);
         }
-        
-        free(host_src_inter);
-        free(host_dest_inter);
-        free(host_src_non.a); free(host_src_non.b);
-        free(host_src_non.c); free(host_src_non.d);
-        free(host_dest_non.a); free(host_dest_non.b);
-        free(host_dest_non.c); free(host_dest_non.d);
+
+        free(h_src_i); free(h_dest_i);
+        free(h_src_n.a); free(h_src_n.b); free(h_src_n.c); free(h_src_n.d);
+        free(h_dest_n.a); free(h_dest_n.b); free(h_dest_n.c); free(h_dest_n.d);
     }
-    
-    // Bitreverse experiment section
-    printf("\n=== Bitreverse Experiments ===\n");
-    printf("CSV Format: arraySize,blockSize,bitreverseTime_ms\n");
-    
-    const unsigned int BITREVERSE_SIZE = 1 << 16; // 65536 elements
-    unsigned int *h_data = (unsigned int*) malloc(BITREVERSE_SIZE * sizeof(unsigned int));
-    for (unsigned int i = 0; i < BITREVERSE_SIZE; i++) {
-        h_data[i] = i;
-    }
-    unsigned int *d_data = NULL;
-    cudaMalloc(&d_data, BITREVERSE_SIZE * sizeof(unsigned int));
-    cudaMemcpy(d_data, h_data, BITREVERSE_SIZE * sizeof(unsigned int), cudaMemcpyHostToDevice);
-    
-    for (unsigned int blockSize = 64; blockSize <= 1024; blockSize *= 2) {
-        dim3 block(blockSize);
-        dim3 grid((BITREVERSE_SIZE + blockSize - 1) / blockSize);
-        // Reset device data for each experiment
-        cudaMemcpy(d_data, h_data, BITREVERSE_SIZE * sizeof(unsigned int), cudaMemcpyHostToDevice);
-        cudaEvent_t start = get_time();
-        bitreverse_kernel<<<grid, block>>>(d_data, BITREVERSE_SIZE);
-        cudaDeviceSynchronize();
-        cudaEvent_t end = get_time();
-        float time_ms = elapsed_time(start, end);
-        printf("%u,%u,%.4f\n", BITREVERSE_SIZE, blockSize, time_ms);
-    }
-    
-    cudaFree(d_data);
-    free(h_data);
     cudaDeviceReset();
     return 0;
 }
