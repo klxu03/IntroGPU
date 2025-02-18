@@ -5,3 +5,5 @@ RUN /bin/sh -c "apt-get update && \
     apt-get install -y vim git && \
     git clone https://github.com/klxu03/IntroGPU.git /opt/IntroGPU && \
     apt-get clean && rm -rf /var/lib/apt/lists/*"
+
+ENTRYPOINT ["/bin/bash"]
