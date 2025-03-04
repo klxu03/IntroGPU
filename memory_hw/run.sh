@@ -1,74 +1,56 @@
 #!/bin/bash
 # run.sh
-# Make sure to chmod +x run.sh
-# This script builds and runs both the memory-bound and compute-bound programs
-# under various configurations.
+# 
+# This script compiles the memory-bound and compute-bound CUDA programs,
+# then runs them with various block/thread/pinned configurations.
+# We test 4 block sizes, 4 thread-per-block sizes, and pinned=0 or 1.
+# 
+# For the memory-bound code, we fix readsPerThread=8.
+# For the compute-bound code, we fix opsPerThread=50000.
+#
+# Adjust as needed for your assignment or system.
 
+# 1) Compile both programs
 echo "==== Building Memory-Bound ===="
 nvcc cuda_memory_bound.cu -o cuda_memory_bound
 echo "==== Building Compute-Bound ===="
 nvcc cuda_compute_bound.cu -o cuda_compute_bound
 
-echo "===================================================================="
-echo "Memory-Bound Tests"
-echo "===================================================================="
+# 2) Define parameter sets
+blocksList=(4 16 64 128)
+threadsList=(64 128 256 512)
+pinnedList=(0 1)
 
-# 1) Small data
-echo ""
-echo "---- Memory-Bound: 8 blocks, 128 threads, 8 reads, pinned=0 ----"
-./cuda_memory_bound 8 128 8 0
-echo ""
-echo "---- Memory-Bound: 8 blocks, 128 threads, 8 reads, pinned=1 ----"
-./cuda_memory_bound 8 128 8 1
-
-# 2) Medium data
-echo ""
-echo "---- Memory-Bound: 16 blocks, 128 threads, 8 reads, pinned=0 ----"
-./cuda_memory_bound 16 128 8 0
-echo ""
-echo "---- Memory-Bound: 16 blocks, 128 threads, 8 reads, pinned=1 ----"
-./cuda_memory_bound 16 128 8 1
-
-# 3) Larger data
-echo ""
-echo "---- Memory-Bound: 64 blocks, 256 threads, 8 reads, pinned=0 ----"
-./cuda_memory_bound 64 256 8 0
-echo ""
-echo "---- Memory-Bound: 64 blocks, 256 threads, 8 reads, pinned=1 ----"
-./cuda_memory_bound 64 256 8 1
+READS=8      # memory-bound setting
+OPS=50000    # compute-bound setting
 
 echo ""
 echo "===================================================================="
-echo "Compute-Bound Tests"
+echo "Memory-Bound Tests (readsPerThread=$READS)"
 echo "===================================================================="
-
-# 1) Fewer ops, pinned=0
-echo ""
-echo "---- Compute-Bound: 16 blocks, 128 threads, 10000 ops, pinned=0 ----"
-./cuda_compute_bound 16 128 10000 0
-
-# 2) Fewer ops, pinned=1
-echo ""
-echo "---- Compute-Bound: 16 blocks, 128 threads, 10000 ops, pinned=1 ----"
-./cuda_compute_bound 16 128 10000 1
-
-# 3) More ops
-echo ""
-echo "---- Compute-Bound: 16 blocks, 128 threads, 50000 ops, pinned=0 ----"
-./cuda_compute_bound 16 128 50000 0
+for b in "${blocksList[@]}"; do
+  for t in "${threadsList[@]}"; do
+    for p in "${pinnedList[@]}"; do
+      echo ""
+      echo "---- Memory-Bound: $b blocks, $t threads, $READS reads, pinned=$p ----"
+      ./cuda_memory_bound $b $t $READS $p
+    done
+  done
+done
 
 echo ""
-echo "---- Compute-Bound: 16 blocks, 128 threads, 50000 ops, pinned=1 ----"
-./cuda_compute_bound 16 128 50000 1
-
-# 4) Vary block/thread shape
-echo ""
-echo "---- Compute-Bound: 8 blocks, 256 threads, 50000 ops, pinned=0 ----"
-./cuda_compute_bound 8 256 50000 0
-
-echo ""
-echo "---- Compute-Bound: 8 blocks, 256 threads, 50000 ops, pinned=1 ----"
-./cuda_compute_bound 8 256 50000 1
+echo "===================================================================="
+echo "Compute-Bound Tests (opsPerThread=$OPS)"
+echo "===================================================================="
+for b in "${blocksList[@]}"; do
+  for t in "${threadsList[@]}"; do
+    for p in "${pinnedList[@]}"; do
+      echo ""
+      echo "---- Compute-Bound: $b blocks, $t threads, $OPS ops, pinned=$p ----"
+      ./cuda_compute_bound $b $t $OPS $p
+    done
+  done
+done
 
 echo ""
 echo "==== Done! ===="
