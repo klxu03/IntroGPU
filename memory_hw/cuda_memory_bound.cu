@@ -32,7 +32,7 @@
 #include <ctime>
 #include <cuda_runtime.h>
 
-#define MAX_CONST_SIZE 16384  // On my GPU, need to fix this so don't get not enough memory error
+#define MAX_CONST_SIZE 65536  // On my GPU, need to fix this so don't get not enough memory error
 
 // ---------------------------------------------------------------------
 // Error-checking macro copied from the sample code
