@@ -39,12 +39,12 @@ echo "===================================================================="
 echo "Large Data Copy Test - Pinned vs. Non-Pinned"
 echo "===================================================================="
 echo ""
-echo "---- Memory-Bound: 512 blocks, 512 threads, 10000 reads, pinned=0 ----"
-./cuda_memory_bound 512 512 10000 0
+echo "---- Memory-Bound: 512 blocks, 512 threads, 2000 reads, pinned=0 ----"
+./cuda_memory_bound 512 512 2000 0
 
 echo ""
-echo "---- Memory-Bound: 512 blocks, 512 threads, 10000 reads, pinned=1 ----"
-./cuda_memory_bound 512 512 10000 1
+echo "---- Memory-Bound: 512 blocks, 512 threads, 2000 reads, pinned=1 ----"
+./cuda_memory_bound 512 512 2000 1
 
 echo ""
 echo "==== Done! ===="
