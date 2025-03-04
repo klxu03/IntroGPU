@@ -25,7 +25,7 @@
 #include <cuda_runtime.h>
 
 #define LOOP_COUNT     1000
-#define MAX_CONST_SIZE 65536  // Maximum size for constant memory input
+#define MAX_CONST_SIZE 16380
 
 // ---------------------------------------------------------------------
 // Error-checking macro (demonstrates careful host memory management)
