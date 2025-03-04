@@ -3,13 +3,9 @@
 # 
 # This script compiles the memory-bound CUDA program,
 # then runs it with various block/thread/pinned configurations.
-# We test 4 block sizes, 4 thread-per-block sizes, and pinned=0 or 1.
-# 
 # For the memory-bound code, we fix readsPerThread=8.
-#
-# Adjust as needed for your assignment or system.
 
-# 1) Compile both programs
+# 1) Compile program
 echo "==== Building Memory-Bound ===="
 nvcc cuda_memory_bound.cu -o cuda_memory_bound
 
@@ -18,7 +14,7 @@ blocksList=(4 16 64 128)
 threadsList=(64 128 256 512)
 pinnedList=(0 1)
 
-READS=8      # memory-bound setting
+READS=8
 
 echo ""
 echo "===================================================================="
