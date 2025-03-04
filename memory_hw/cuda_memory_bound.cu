@@ -29,12 +29,13 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <cuda_runtime.h>
 
-#define MAX_CONST_SIZE 16384  // Must be <= 16384 so each element fits in constant memory
+#define MAX_CONST_SIZE 16384  // On my GPU, need to fix this so don't get not enough memory error
 
 // ---------------------------------------------------------------------
-// Error-checking macro
+// Error-checking macro copied from the sample code
 // ---------------------------------------------------------------------
 #define CUDA_CHECK(call) do {                                            \
     cudaError_t err = call;                                              \
@@ -45,60 +46,52 @@
     }                                                                    \
 } while(0)
 
-// ---------------------------------------------------------------------
 // Constant memory array
-// ---------------------------------------------------------------------
 __constant__ unsigned int cInput[MAX_CONST_SIZE];
 
 // ---------------------------------------------------------------------
 // Kernel 1: Global Memory
 // Each thread reads READS_PER_THREAD elements from global memory d_in.
-// Summation is minimal arithmetic, highlighting memory usage.
 // ---------------------------------------------------------------------
 __global__ void kernelGlobal(const unsigned int *d_in, unsigned int *d_out, 
-                             int readsPerThread, int totalReads)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if(tid < totalReads) {
-        unsigned int sum = 0;
-        // The chunk of elements that this thread processes
-        int baseIdx = tid * readsPerThread;
+                             int readsPerThread, int totalReads) {
+    int threadId = blockIdx.x * blockDim.x + threadIdx.x;
+    if(threadId < totalReads) {
+        d_out[threadId] = 0;
+        // The chunk of elements that this thread processes without register use
+        int baseIdx = threadId * readsPerThread;
         for(int i = 0; i < readsPerThread; i++) {
-            sum += d_in[baseIdx + i];
+            d_out[threadId] += d_in[baseIdx + i];
         }
-        d_out[tid] = sum;
     }
 }
 
 // ---------------------------------------------------------------------
 // Kernel 2: Shared Memory
-// Each block loads a chunk of data from global into shared memory, 
-// then each thread reads from shared memory multiple times to sum up.
+// Each block loads a chunk of data from global into shared memory, then sums 
 // ---------------------------------------------------------------------
 __global__ void kernelShared(const unsigned int *d_in, unsigned int *d_out,
-                             int readsPerThread, int totalReads)
-{
-    extern __shared__ unsigned int s_data[];
-    int tid   = blockIdx.x * blockDim.x + threadIdx.x;
-    int ltid  = threadIdx.x;  // local thread ID
-    if(tid < totalReads) {
+                             int readsPerThread, int totalReads) {
+    extern __shared__ unsigned int s_data[]; // size determined by smemSize in main
+    int threadId = blockIdx.x * blockDim.x + threadIdx.x;
+    if(threadId < totalReads) {
+        d_out[threadId] = 0;
         // Each block processes blockDim.x * readsPerThread elements
         int blockSize = blockDim.x * readsPerThread;
         int blockStart = blockIdx.x * blockSize;
 
-        // Copy that block’s chunk from global -> shared
-        for(int i = ltid; i < blockSize; i += blockDim.x) {
+        // Copy that block’s chunk from global -> shared with memory coalescing
+        // since reading from global memory bank
+        for(int i = threadIdx.x; i < blockSize; i += blockDim.x) {
             s_data[i] = d_in[blockStart + i];
         }
         __syncthreads();
 
         // Now each thread sums the portion from shared
-        unsigned int sum = 0;
-        int baseIdx = ltid * readsPerThread;
+        int baseIdx = threadIdx.x * readsPerThread;
         for(int i = 0; i < readsPerThread; i++) {
-            sum += s_data[baseIdx + i];
+            d_out[threadId] += s_data[baseIdx + i];
         }
-        d_out[tid] = sum;
     }
 }
 
@@ -106,70 +99,59 @@ __global__ void kernelShared(const unsigned int *d_in, unsigned int *d_out,
 // Kernel 3: Constant Memory
 // Each thread reads from cInput[] (cached constant memory).
 // ---------------------------------------------------------------------
-__global__ void kernelConstant(unsigned int *d_out, int readsPerThread, int totalReads)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if(tid < totalReads) {
-        unsigned int sum = 0;
-        int baseIdx = tid * readsPerThread;
+__global__ void kernelConstant(unsigned int *d_out, int readsPerThread, int totalReads) {
+    int threadId = blockIdx.x * blockDim.x + threadIdx.x;
+    if(threadId < totalReads) {
+        d_out[threadId] = 0;
+        int baseIdx = threadId * readsPerThread;
         for(int i = 0; i < readsPerThread; i++) {
-            sum += cInput[baseIdx + i];
+            d_out[threadId] += cInput[baseIdx + i];
         }
-        d_out[tid] = sum;
     }
 }
 
 // ---------------------------------------------------------------------
 // Kernel 4: Register Kernel
-// We still have to read from global memory, but we accumulate 
-// everything in a local register variable. 
-// (It's the same summation, but we highlight that the final 
-// accumulation is purely in registers.)
 // ---------------------------------------------------------------------
 __global__ void kernelRegister(const unsigned int *d_in, unsigned int *d_out,
-                               int readsPerThread, int totalReads)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if(tid < totalReads) {
-        unsigned int sumReg = 0; // This variable stays in registers
-        int baseIdx = tid * readsPerThread;
+                               int readsPerThread, int totalReads) {
+    int threadId = blockIdx.x * blockDim.x + threadIdx.x;
+    if(threadId < totalReads) {
+        unsigned int sumReg = 0; // creating a sumReg variable stored in registers
+        int baseIdx = threadId * readsPerThread;
         for(int i = 0; i < readsPerThread; i++) {
             sumReg += d_in[baseIdx + i];
         }
-        d_out[tid] = sumReg;
+        d_out[threadId] = sumReg;
     }
 }
 
 // ---------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------
-int main(int argc, char* argv[])
-{
+int main(int argc, char* argv[]) {
     if(argc < 4) {
         fprintf(stderr, "Usage: %s <numBlocks> <threadsPerBlock> <readsPerThread> [usePinned=0]\n", argv[0]);
         fprintf(stderr, "Example: %s 32 256 8 1\n", argv[0]);
         return 1;
     }
 
-    int numBlocks       = atoi(argv[1]);
+    int numBlocks = atoi(argv[1]);
     int threadsPerBlock = atoi(argv[2]);
-    int readsPerThread  = atoi(argv[3]);
-    int usePinned       = (argc > 4) ? atoi(argv[4]) : 0;
+    int readsPerThread = atoi(argv[3]);
+    int usePinned = (argc > 4) ? atoi(argv[4]) : 0; // optional, default don't use pinned memory
 
-    // totalReads = number of threads total
     int totalThreads = numBlocks * threadsPerBlock;
-    // total data size = totalThreads * readsPerThread
     int dataSize = totalThreads * readsPerThread;
 
     printf("Configuration:\n");
-    printf("  blocks            = %d\n", numBlocks);
-    printf("  threadsPerBlock   = %d\n", threadsPerBlock);
-    printf("  readsPerThread    = %d\n", readsPerThread);
-    printf("  totalThreads      = %d\n", totalThreads);
-    printf("  dataSize          = %d\n", dataSize);
-    printf("  usePinned         = %d\n", usePinned);
+    printf("blocks = %d\n", numBlocks);
+    printf("threadsPerBlock = %d\n", threadsPerBlock);
+    printf("readsPerThread = %d\n", readsPerThread);
+    printf("totalThreads = %d\n", totalThreads);
+    printf("dataSize = %d\n", dataSize);
+    printf("usePinned = %d\n", usePinned);
 
-    // If dataSize is bigger than MAX_CONST_SIZE, constant kernel won't work
     if(dataSize > MAX_CONST_SIZE) {
         printf("WARNING: dataSize=%d > MAX_CONST_SIZE=%d, constant kernel won't be valid.\n",
                dataSize, MAX_CONST_SIZE);
@@ -201,10 +183,11 @@ int main(int argc, char* argv[])
         h_outR = new unsigned int[totalThreads];
     }
 
-    // Initialize input data
+    // Initialize input data with random data
+    srand((unsigned)time(NULL));
+
     for(int i = 0; i < dataSize; i++) {
-        // random or sequential
-        h_in[i] = i % 1024;
+        h_in[i] = rand() % 1024;
     }
 
     // Device memory
@@ -212,14 +195,13 @@ int main(int argc, char* argv[])
     CUDA_CHECK(cudaMalloc((void**)&d_in,  sizeBytes));
     CUDA_CHECK(cudaMalloc((void**)&d_out, outBytes));
 
-    // Copy host->device
+    // Copy host->device, and constant memory if within limit
     CUDA_CHECK(cudaMemcpy(d_in, h_in, sizeBytes, cudaMemcpyHostToDevice));
-    // Copy to constant if within limit
     if(dataSize <= MAX_CONST_SIZE) {
         CUDA_CHECK(cudaMemcpyToSymbol(cInput, h_in, sizeBytes));
     }
 
-    // Timers
+    // Initializing timers
     cudaEvent_t start, stop;
     float msGlobal   = 0.f;
     float msShared   = 0.f;
@@ -257,8 +239,7 @@ int main(int argc, char* argv[])
     CUDA_CHECK(cudaEventDestroy(stop));
 
     // ---------------------------------------------------------------------
-    // 3) Constant Kernel
-    // Only run if dataSize <= MAX_CONST_SIZE
+    // 3) Constant Kernel (only run if dataSize <= MAX_CONST_SIZE)
     // ---------------------------------------------------------------------
     if(dataSize <= MAX_CONST_SIZE) {
         CUDA_CHECK(cudaEventCreate(&start));
@@ -277,8 +258,6 @@ int main(int argc, char* argv[])
 
     // ---------------------------------------------------------------------
     // 4) Register Kernel
-    // It's the same summation, but we highlight that the sum variable
-    // is stored in registers. We still read from global memory.
     // ---------------------------------------------------------------------
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
@@ -295,14 +274,14 @@ int main(int argc, char* argv[])
     // Print results
     // ---------------------------------------------------------------------
     printf("\n=== TIMING (ms) ===\n");
-    printf("Global:   %.4f ms\n",   msGlobal);
-    printf("Shared:   %.4f ms\n",   msShared);
+    printf("Global: %.4f ms\n", msGlobal);
+    printf("Shared: %.4f ms\n", msShared);
     if(msConstant >= 0.f) {
         printf("Constant: %.4f ms\n", msConstant);
     } else {
         printf("Constant: N/A (data too large)\n");
     }
-    printf("Register: %.4f ms\n",   msRegister);
+    printf("Register: %.4f ms\n", msRegister);
 
     printf("\n=== SAMPLE OUTPUT (first 5 threads) ===\n");
     printf("Global:   "); 
