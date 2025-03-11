@@ -23,7 +23,6 @@
 #include <ctime>
 #include <cuda_runtime.h>
 
-#define MAX_CONST_SIZE 16384
 #define CUDA_CHECK(call) do {                                             \
     cudaError_t err = call;                                               \
     if (err != cudaSuccess) {                                             \
