@@ -1,19 +1,20 @@
 /****************************************************************************
- * File: single.cu
+ * File: single_chunk.cu
  *
- * Demonstrates a single-stream (non-pipelined) CUDA program that processes data in chunks. For each chunk, it:
+ * Demonstrates a single-stream (non-pipelined) CUDA program that processes 
+ * all data at once (in a single chunk). It:
  *   1) Copies data & weights from host to device.
  *   2) Multiplies them.
  *   3) Reduces both arrays to a single sum each.
  *   4) Copies those partial sums back.
- * Finally, it aggregates the partial sums into a final weighted average and prints total timing in milliseconds.
+ * Finally, it computes the weighted average and prints the total timing.
  *
  * Usage:
- *   nvcc single.cu -o single
- *   ./single <num_elements> <threads_per_block> <num_chunks>
+ *   nvcc single_chunk.cu -o single_chunk
+ *   ./single_chunk <num_elements> <threads_per_block>
  *
  * Example:
- *   ./single 1000000 256 8
+ *   ./single_chunk 1000000 256
  ****************************************************************************/
 
 #include <cstdio>
@@ -50,7 +51,7 @@ __global__ void reductionKernel(const float* d_in, float* d_out, int n)
     unsigned int tid = threadIdx.x;
     unsigned int idx = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
 
-    // sum the pair of elements thread is responsible for
+    // sum the pair of elements this thread is responsible for
     float sum = 0.0f;
     if (idx < n) {
         sum = d_in[idx];
@@ -61,26 +62,23 @@ __global__ void reductionKernel(const float* d_in, float* d_out, int n)
     sdata[tid] = sum;
     __syncthreads();
 
-    // keep reducing partial sums in half until only one float remains
+    // reduce partial sums in shared memory
     for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (tid < s) {
             sdata[tid] += sdata[tid + s];
         }
         __syncthreads();
     }
-
     if (tid == 0) {
         d_out[blockIdx.x] = sdata[0];
     }
 }
-
 
 // ---------------------------------------------------------------------
 // HELPER FUNCTIONS
 // ---------------------------------------------------------------------
 
 // performReductionAsync: repeatedly calls reductionKernel until only one float remains
-// this performs the full reduction result and stores it in d_result
 static void performReductionAsync(float* d_input, int n, int threadsPerBlock,
                                   cudaStream_t stream, float** d_result)
 {
@@ -91,23 +89,20 @@ static void performReductionAsync(float* d_input, int n, int threadsPerBlock,
     while (currElements > 1) {
         int blocks = (currElements + threadsPerBlock * 2 - 1) / (threadsPerBlock * 2);
         size_t smemSize = threadsPerBlock * sizeof(float);
-
         CUDA_CHECK(cudaMalloc((void**)&d_out, blocks * sizeof(float)));
         reductionKernel<<<blocks, threadsPerBlock, smemSize, stream>>>(d_in, d_out, currElements);
         CUDA_CHECK(cudaGetLastError());
-
-        // Free the old buffer if not the original
         if (d_in != d_input) {
             CUDA_CHECK(cudaFree(d_in));
         }
-        currElements = blocks; // old number of blocks is now the number of elements we need to perform reduction on next
+        currElements = blocks;
         d_in = d_out;
         d_out = NULL;
     }
-    *d_result = d_in; // Single reduced value on device
+    *d_result = d_in; // now contains the single reduced value
 }
 
-// Processes one chunk completely without concurrent streams 
+// Processes one chunk (here, the entire array) completely in one stream.
 static void processOneChunkSingle(const float* h_data, const float* h_weights,
                                   int chunkSize, int threadsPerBlock,
                                   float* h_partialWeighted, float* h_partialWeight)
@@ -123,62 +118,38 @@ static void processOneChunkSingle(const float* h_data, const float* h_weights,
     multiplyKernel<<<blocks, threadsPerBlock>>>(d_data, d_weights, d_prod, chunkSize);
     CUDA_CHECK(cudaDeviceSynchronize());
     float *d_chunkWeighted = NULL, *d_chunkWeight = NULL;
-    performReductionAsync(d_prod, chunkSize, threadsPerBlock, 0, &d_chunkWeighted);
+    performReductionAsync(d_prod,    chunkSize, threadsPerBlock, 0, &d_chunkWeighted);
     performReductionAsync(d_weights, chunkSize, threadsPerBlock, 0, &d_chunkWeight);
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(h_partialWeighted, d_chunkWeighted, sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_partialWeight, d_chunkWeight,   sizeof(float), cudaMemcpyDeviceToHost));
-    
-    // Free the device memory
+    CUDA_CHECK(cudaMemcpy(h_partialWeight,   d_chunkWeight,   sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaFree(d_data));
     CUDA_CHECK(cudaFree(d_weights));
     CUDA_CHECK(cudaFree(d_chunkWeighted));
     CUDA_CHECK(cudaFree(d_chunkWeight));
 }
 
-// Sets up processing for all chunks sequentially and aggregates the result.
-static float pipelineChunksSingle(float* h_data, float* h_weights, int numElements,
-                                  int threadsPerBlock, int numChunks)
+// pipelineAllSingle: processes the entire data as one chunk, times it, and returns the weighted average.
+static float pipelineAllSingle(float* h_data, float* h_weights, int numElements, int threadsPerBlock)
 {
-    int chunkSize = (numElements + numChunks - 1) / numChunks;
-    float *h_partialWeighted = NULL, *h_partialWeight = NULL;
-    
-    CUDA_CHECK(cudaMallocHost((void**)&h_partialWeighted, numChunks * sizeof(float)));
-    CUDA_CHECK(cudaMallocHost((void**)&h_partialWeight, numChunks * sizeof(float)));
-
+    float partialWeighted = 0.0f, partialWeight = 0.0f;
     cudaEvent_t overallStart, overallStop;
     CUDA_CHECK(cudaEventCreate(&overallStart));
     CUDA_CHECK(cudaEventCreate(&overallStop));
     CUDA_CHECK(cudaEventRecord(overallStart, 0));
 
-    for (int i = 0; i < numChunks; i++) {
-        int offset = i * chunkSize;
-        int size = (offset + chunkSize > numElements) ? (numElements - offset) : chunkSize;
-        processOneChunkSingle(h_data + offset, h_weights + offset, size, threadsPerBlock,
-                              &h_partialWeighted[i], &h_partialWeight[i]);
-    }
+    processOneChunkSingle(h_data, h_weights, numElements, threadsPerBlock,
+                          &partialWeighted, &partialWeight);
 
     CUDA_CHECK(cudaEventRecord(overallStop, 0));
     CUDA_CHECK(cudaEventSynchronize(overallStop));
-
     float overallMs = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&overallMs, overallStart, overallStop));
 
-    float totalWeighted = 0.0f, totalWeight = 0.0f;
-    for (int i = 0; i < numChunks; i++) {
-        totalWeighted += h_partialWeighted[i];
-        totalWeight += h_partialWeight[i];
-    }
-    if (totalWeight <= 0.0f) {
-        printf("No valid weights found in the input.\n");
-        return 0.0f;
-    }
-    float finalAvg = totalWeighted / totalWeight;
-
+    float finalAvg = (partialWeight > 0.0f) ? (partialWeighted / partialWeight) : 0.0f;
     printf("Weighted Average = %.4f\n", finalAvg);
     printf("Overall Time (ms) = %.4f\n", overallMs);
-    CUDA_CHECK(cudaFreeHost(h_partialWeighted));
-    CUDA_CHECK(cudaFreeHost(h_partialWeight));
+
     CUDA_CHECK(cudaEventDestroy(overallStart));
     CUDA_CHECK(cudaEventDestroy(overallStop));
     return finalAvg;
@@ -187,7 +158,7 @@ static float pipelineChunksSingle(float* h_data, float* h_weights, int numElemen
 // Allocates and initializes host arrays with random data.
 static void createHostArrays(float** h_data, float** h_weights, int n)
 {
-    *h_data    = (float*)malloc(n * sizeof(float));
+    *h_data = (float*)malloc(n * sizeof(float));
     *h_weights = (float*)malloc(n * sizeof(float));
     if (!(*h_data) || !(*h_weights)) {
         fprintf(stderr, "Host malloc failed.\n");
@@ -195,7 +166,7 @@ static void createHostArrays(float** h_data, float** h_weights, int n)
     }
     srand((unsigned)time(NULL));
     for (int i = 0; i < n; i++) {
-        (*h_data)[i]    = (float)(rand() % 100);
+        (*h_data)[i] = (float)(rand() % 100);
         (*h_weights)[i] = (float)(rand() % 10 + 1);
     }
 }
@@ -205,20 +176,19 @@ static void createHostArrays(float** h_data, float** h_weights, int n)
 // ---------------------------------------------------------------------
 int main(int argc, char* argv[])
 {
-    if (argc < 4) {
-        fprintf(stderr, "Usage: %s <num_elements> <threads_per_block> <num_chunks>\n", argv[0]);
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <num_elements> <threads_per_block>\n", argv[0]);
         return 1;
     }
+
     int numElements = atoi(argv[1]);
     int threadsPerBlock = atoi(argv[2]);
-    int numChunks = atoi(argv[3]);
 
     float* h_data = NULL;
     float* h_weights = NULL;
     createHostArrays(&h_data, &h_weights, numElements);
 
-    float finalAvg = pipelineChunksSingle(h_data, h_weights, numElements, threadsPerBlock, numChunks);
-
+    float finalAvg = pipelineAllSingle(h_data, h_weights, numElements, threadsPerBlock);
     printf("Done. Weighted average = %.4f\n", finalAvg);
 
     free(h_data);

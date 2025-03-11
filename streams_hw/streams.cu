@@ -1,10 +1,7 @@
 /****************************************************************************
  * File: streams.cu
  *
- * Demonstrates how to use multiple CUDA streams to pipeline data transfers,
- * kernel execution, and result collection. The code is written in a style
- * similar to the "cuda_memory_bound.cu" example, using similar macros and
- * coding conventions.
+ * Cuda streams pipeline weighted average
  *
  * Usage:
  *   nvcc streams.cu -o streams
@@ -13,14 +10,12 @@
  * Example:
  *   ./streams 1000000 256 8
  *
- * This program splits an array of 'num_elements' into 'num_chunks', then
- * for each chunk:
+ * This program splits an array of 'num_elements' into 'num_chunks', then for each chunk:
  *   1) Copies data & weights asynchronously to the GPU (two streams)
  *   2) Multiplies them (another stream)
  *   3) Reduces both arrays to a single sum each (another stream)
  *   4) Copies those partial sums back (final stream)
- * Finally, it aggregates the partial sums into a final weighted average
- * on the host and prints total timing in milliseconds.
+ * Finally, it aggregates the partial sums into a final weighted average on the host and prints total timing in milliseconds.
  ****************************************************************************/
 
 #include <cstdio>
