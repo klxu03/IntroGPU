@@ -1,8 +1,7 @@
 /****************************************************************************
  * File: single_chunk.cu
  *
- * Demonstrates a single-stream (non-pipelined) CUDA program that processes 
- * all data at once (in a single chunk). It:
+ * Demonstrates a single-stream (non-pipelined) CUDA program that processes all data at once (in a single chunk). It:
  *   1) Copies data & weights from host to device.
  *   2) Multiplies them.
  *   3) Reduces both arrays to a single sum each.
