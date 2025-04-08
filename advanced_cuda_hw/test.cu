@@ -6,54 +6,16 @@
 #include <cudnn.h>
 #include <cublas_v2.h>
 
-// Error checking macros
-#define CHECK_CUDA(call) do {                                \
-    cudaError_t err = call;                                  \
-    if(err != cudaSuccess) {                                 \
-        std::cerr << "CUDA error: " << cudaGetErrorString(err) \
-                  << " in file " << __FILE__                  \
-                  << " line " << __LINE__ << std::endl;      \
-        exit(EXIT_FAILURE);                                  \
-    }                                                        \
-} while(0)
+#define CHECK_CUDA(call) do { cudaError_t err = call; if(err != cudaSuccess) { std::cerr << "CUDA error: " << cudaGetErrorString(err) << " in file " << __FILE__ << " line " << __LINE__ << std::endl; exit(EXIT_FAILURE); } } while(0)
+#define CHECK_CUFFT(call) do { cufftResult err = call; if(err != CUFFT_SUCCESS) { std::cerr << "CUFFT error: " << err << " in file " << __FILE__ << " line " << __LINE__ << std::endl; exit(EXIT_FAILURE); } } while(0)
+#define CHECK_CUDNN(call) do { cudnnStatus_t status = call; if(status != CUDNN_STATUS_SUCCESS) { std::cerr << "cuDNN error: " << cudnnGetErrorString(status) << " in file " << __FILE__ << " line " << __LINE__ << std::endl; exit(EXIT_FAILURE); } } while(0)
+#define CHECK_CUBLAS(call) do { cublasStatus_t status = call; if(status != CUBLAS_STATUS_SUCCESS) { std::cerr << "cuBLAS error: " << status << " in file " << __FILE__ << " line " << __LINE__ << std::endl; exit(EXIT_FAILURE); } } while(0)
 
-#define CHECK_CUFFT(call) do {                                \
-    cufftResult err = call;                                  \
-    if(err != CUFFT_SUCCESS) {                               \
-        std::cerr << "CUFFT error: " << err                 \
-                  << " in file " << __FILE__                 \
-                  << " line " << __LINE__ << std::endl;      \
-        exit(EXIT_FAILURE);                                  \
-    }                                                        \
-} while(0)
-
-#define CHECK_CUDNN(call) do {                                \
-    cudnnStatus_t status = call;                             \
-    if(status != CUDNN_STATUS_SUCCESS) {                     \
-        std::cerr << "cuDNN error: " << cudnnGetErrorString(status) \
-                  << " in file " << __FILE__                 \
-                  << " line " << __LINE__ << std::endl;      \
-        exit(EXIT_FAILURE);                                  \
-    }                                                        \
-} while(0)
-
-#define CHECK_CUBLAS(call) do {                              \
-    cublasStatus_t status = call;                            \
-    if(status != CUBLAS_STATUS_SUCCESS) {                    \
-        std::cerr << "cuBLAS error: " << status             \
-                  << " in file " << __FILE__                 \
-                  << " line " << __LINE__ << std::endl;      \
-        exit(EXIT_FAILURE);                                  \
-    }                                                        \
-} while(0)
-
-// Global constants
 const int NX = 256;
 const int NY = 256;
 const int INPUT_SIZE = NX * NY;
-const int OUTPUT_SIZE = 1024; // Fully Connected (FC) layer output size
+const int OUTPUT_SIZE = 1024;
 
-// Helper function to compute statistics on a float array
 void printStatsFloat(const float* data, int n, const char* label) {
     float minVal = data[0], maxVal = data[0], sum = 0;
     for (int i = 0; i < n; i++) {
@@ -62,12 +24,9 @@ void printStatsFloat(const float* data, int n, const char* label) {
         sum += data[i];
     }
     float mean = sum / n;
-    std::cout << label << " - min: " << minVal 
-              << " max: " << maxVal 
-              << " mean: " << mean << std::endl;
+    std::cout << label << " - min: " << minVal << " max: " << maxVal << " mean: " << mean << std::endl;
 }
 
-// CUDA kernel: frequency filter
 __global__ void frequencyFilter(cufftComplex *data, int nx, int ny, float threshold, float scaleFactor) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total = nx * ny;
@@ -80,7 +39,6 @@ __global__ void frequencyFilter(cufftComplex *data, int nx, int ny, float thresh
     }
 }
 
-// CUDA kernel: scale output (normalization)
 __global__ void scaleOutput(cufftComplex *data, int total, float scale) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx < total) {
@@ -90,38 +48,25 @@ __global__ void scaleOutput(cufftComplex *data, int total, float scale) {
 }
 
 int main() {
-    // -------------------------------
-    // 1. Generate Synthetic Image
-    // -------------------------------
+    // Stage 1: Create synthetic image
     cufftComplex *h_image = new cufftComplex[INPUT_SIZE];
     for (int i = 0; i < INPUT_SIZE; ++i) {
-        h_image[i].x = static_cast<float>(rand() % 256); // random in [0,255]
+        h_image[i].x = static_cast<float>(rand() % 256);
         h_image[i].y = 0.0f;
     }
-    // Print stats for synthetic image (expect min >= 0, max < 256, mean ~127-128)
-    float *temp_image = new float[INPUT_SIZE];
+    float *temp = new float[INPUT_SIZE];
     for (int i = 0; i < INPUT_SIZE; i++)
-        temp_image[i] = h_image[i].x;
-    printStatsFloat(temp_image, INPUT_SIZE, "Stage 1 - Synthetic Image");
-    delete[] temp_image;
+        temp[i] = h_image[i].x;
+    printStatsFloat(temp, INPUT_SIZE, "Stage 1 - Synthetic Image");
+    delete[] temp;
 
-    // -------------------------------
-    // 2. Copy Image to Device
-    // -------------------------------
+    // Stage 2: Process with FFT, frequency filtering, and inverse FFT (normalize output)
     cufftComplex *d_image;
     CHECK_CUDA(cudaMalloc((void**)&d_image, INPUT_SIZE * sizeof(cufftComplex)));
     CHECK_CUDA(cudaMemcpy(d_image, h_image, INPUT_SIZE * sizeof(cufftComplex), cudaMemcpyHostToDevice));
-
-    // -------------------------------
-    // 3. Forward FFT using cuFFT
-    // -------------------------------
     cufftHandle fftPlan;
     CHECK_CUFFT(cufftPlan2d(&fftPlan, NX, NY, CUFFT_C2C));
     CHECK_CUFFT(cufftExecC2C(fftPlan, d_image, d_image, CUFFT_FORWARD));
-
-    // -------------------------------
-    // 4. Frequency Filtering
-    // -------------------------------
     int totalElements = INPUT_SIZE;
     int threadsPerBlock = 256;
     int blocks = (totalElements + threadsPerBlock - 1) / threadsPerBlock;
@@ -129,41 +74,24 @@ int main() {
     float scaleFactor = 0.5f;
     frequencyFilter<<<blocks, threadsPerBlock>>>(d_image, NX, NY, threshold, scaleFactor);
     CHECK_CUDA(cudaDeviceSynchronize());
-
-    // 5. Inverse FFT to return to the spatial domain
     CHECK_CUFFT(cufftExecC2C(fftPlan, d_image, d_image, CUFFT_INVERSE));
-
-    // Normalize the inverse FFT output by dividing by (NX * NY)
     scaleOutput<<<blocks, threadsPerBlock>>>(d_image, totalElements, 1.0f / (NX * NY));
     CHECK_CUDA(cudaDeviceSynchronize());
-
-    // Copy the normalized data back to host
     cufftComplex *h_normalized = new cufftComplex[INPUT_SIZE];
     CHECK_CUDA(cudaMemcpy(h_normalized, d_image, INPUT_SIZE * sizeof(cufftComplex), cudaMemcpyDeviceToHost));
-
-    // Extract the real part for statistics
-    float *normalized_real = new float[INPUT_SIZE];
+    float *h_enhanced = new float[INPUT_SIZE];
     for (int i = 0; i < INPUT_SIZE; i++) {
-        normalized_real[i] = h_normalized[i].x;
+        h_enhanced[i] = h_normalized[i].x;
     }
-    printStatsFloat(normalized_real, INPUT_SIZE, "Stage 2 - After Inverse FFT (Normalized)");
-
-    // Clean up temporary host arrays for stage 2
+    printStatsFloat(h_enhanced, INPUT_SIZE, "Stage 2 - After Inverse FFT (Normalized)");
     delete[] h_normalized;
-    delete[] normalized_real;
-    
-    // -------------------------------
-    // 6. Fully Connected Layer using cuBLAS
-    // -------------------------------
-    // Treat enhanced image (flattened) as vector input for FC layer.
+
+    // Stage 3: Fully Connected (FC) Layer using cuBLAS
     float *d_fc_input;
     CHECK_CUDA(cudaMalloc((void**)&d_fc_input, INPUT_SIZE * sizeof(float)));
-    CHECK_CUDA(cudaMemcpy(d_fc_input, enhanced_real, INPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
-
+    CHECK_CUDA(cudaMemcpy(d_fc_input, h_enhanced, INPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
     float *d_fc_output;
     CHECK_CUDA(cudaMalloc((void**)&d_fc_output, OUTPUT_SIZE * sizeof(float)));
-
-    // Randomly initialize weights (W) and biases (b)
     float *h_W = new float[OUTPUT_SIZE * INPUT_SIZE];
     float *h_b = new float[OUTPUT_SIZE];
     for (int i = 0; i < OUTPUT_SIZE * INPUT_SIZE; ++i) {
@@ -177,15 +105,10 @@ int main() {
     CHECK_CUDA(cudaMalloc((void**)&d_b, OUTPUT_SIZE * sizeof(float)));
     CHECK_CUDA(cudaMemcpy(d_W, h_W, OUTPUT_SIZE * INPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_b, h_b, OUTPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
-
     cublasHandle_t cublasHandle;
     CHECK_CUBLAS(cublasCreate(&cublasHandle));
     float alpha_cublas = 1.0f, beta_cublas = 0.0f;
-    CHECK_CUBLAS(cublasSgemm(cublasHandle, CUBLAS_OP_N, CUBLAS_OP_N, 
-                  OUTPUT_SIZE, 1, INPUT_SIZE, 
-                  &alpha_cublas, d_W, OUTPUT_SIZE, 
-                  d_fc_input, INPUT_SIZE, 
-                  &beta_cublas, d_fc_output, OUTPUT_SIZE));
+    CHECK_CUBLAS(cublasSgemm(cublasHandle, CUBLAS_OP_N, CUBLAS_OP_N, OUTPUT_SIZE, 1, INPUT_SIZE, &alpha_cublas, d_W, OUTPUT_SIZE, d_fc_input, INPUT_SIZE, &beta_cublas, d_fc_output, OUTPUT_SIZE));
     for (int i = 0; i < OUTPUT_SIZE; ++i) {
         CHECK_CUBLAS(cublasSaxpy(cublasHandle, 1, &alpha_cublas, d_b + i, 1, d_fc_output + i, 1));
     }
@@ -193,27 +116,19 @@ int main() {
     CHECK_CUDA(cudaMemcpy(h_fc_output, d_fc_output, OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
     printStatsFloat(h_fc_output, OUTPUT_SIZE, "Stage 3 - FC Raw Output");
 
-    // -------------------------------
-    // 7. Apply cuDNN ReLU Activation on FC Output
-    // -------------------------------
+    // Stage 4: ReLU Activation with cuDNN on FC Output
     cudnnHandle_t cudnnHandle;
     CHECK_CUDNN(cudnnCreate(&cudnnHandle));
-
     cudnnTensorDescriptor_t fcTensorDesc;
     CHECK_CUDNN(cudnnCreateTensorDescriptor(&fcTensorDesc));
-    CHECK_CUDNN(cudnnSetTensor4dDescriptor(fcTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 
-                  1, 1, OUTPUT_SIZE, 1));
-
+    CHECK_CUDNN(cudnnSetTensor4dDescriptor(fcTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, 1, OUTPUT_SIZE, 1));
     cudnnActivationDescriptor_t fcActDesc;
     CHECK_CUDNN(cudnnCreateActivationDescriptor(&fcActDesc));
     CHECK_CUDNN(cudnnSetActivationDescriptor(fcActDesc, CUDNN_ACTIVATION_RELU, CUDNN_PROPAGATE_NAN, 0.0));
-
     float *d_fc_relu;
     CHECK_CUDA(cudaMalloc((void**)&d_fc_relu, OUTPUT_SIZE * sizeof(float)));
     float alpha_relu = 1.0f, beta_relu = 0.0f;
-    CHECK_CUDNN(cudnnActivationForward(cudnnHandle, fcActDesc, &alpha_relu, 
-                  fcTensorDesc, d_fc_output, &beta_relu, 
-                  fcTensorDesc, d_fc_relu));
+    CHECK_CUDNN(cudnnActivationForward(cudnnHandle, fcActDesc, &alpha_relu, fcTensorDesc, d_fc_output, &beta_relu, fcTensorDesc, d_fc_relu));
     float *h_fc_relu = new float[OUTPUT_SIZE];
     CHECK_CUDA(cudaMemcpy(h_fc_relu, d_fc_relu, OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
     printStatsFloat(h_fc_relu, OUTPUT_SIZE, "Stage 4 - After ReLU");
@@ -230,12 +145,9 @@ int main() {
     }
     std::cout << std::endl;
 
-    // -------------------------------
-    // 8. Cleanup
-    // -------------------------------
+    // Cleanup
     delete[] h_image;
     delete[] h_enhanced;
-    delete[] enhanced_real;
     delete[] h_W;
     delete[] h_b;
     delete[] h_fc_output;
