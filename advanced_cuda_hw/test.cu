@@ -130,21 +130,27 @@ int main() {
     frequencyFilter<<<blocks, threadsPerBlock>>>(d_image, NX, NY, threshold, scaleFactor);
     CHECK_CUDA(cudaDeviceSynchronize());
 
-    // -------------------------------
-    // 5. Inverse FFT and Normalization
-    // -------------------------------
+    // 5. Inverse FFT to return to the spatial domain
     CHECK_CUFFT(cufftExecC2C(fftPlan, d_image, d_image, CUFFT_INVERSE));
+
+    // Normalize the inverse FFT output by dividing by (NX * NY)
     scaleOutput<<<blocks, threadsPerBlock>>>(d_image, totalElements, 1.0f / (NX * NY));
     CHECK_CUDA(cudaDeviceSynchronize());
 
-    // Copy enhanced image back to host and print stats (expect roughly 0-255; may be slightly lower due to filtering)
-    cufftComplex *h_enhanced = new cufftComplex[INPUT_SIZE];
-    CHECK_CUDA(cudaMemcpy(h_enhanced, d_image, INPUT_SIZE * sizeof(cufftComplex), cudaMemcpyDeviceToHost));
-    float *enhanced_real = new float[INPUT_SIZE];
+    // Copy the normalized data back to host
+    cufftComplex *h_normalized = new cufftComplex[INPUT_SIZE];
+    CHECK_CUDA(cudaMemcpy(h_normalized, d_image, INPUT_SIZE * sizeof(cufftComplex), cudaMemcpyDeviceToHost));
+
+    // Extract the real part for statistics
+    float *normalized_real = new float[INPUT_SIZE];
     for (int i = 0; i < INPUT_SIZE; i++) {
-        enhanced_real[i] = h_enhanced[i].x;
+        normalized_real[i] = h_normalized[i].x;
     }
-    printStatsFloat(enhanced_real, INPUT_SIZE, "Stage 2 - After Inverse FFT");
+    printStatsFloat(normalized_real, INPUT_SIZE, "Stage 2 - After Inverse FFT (Normalized)");
+
+    // Clean up temporary host arrays for stage 2
+    delete[] h_normalized;
+    delete[] normalized_real;
     
     // -------------------------------
     // 6. Fully Connected Layer using cuBLAS
