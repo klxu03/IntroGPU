@@ -225,6 +225,8 @@ int main() {
     float *d_fc_relu;
     CHECK_CUDA(cudaMalloc((void**)&d_fc_relu, OUTPUT_SIZE * sizeof(float)));
 
+    cudnnHandle_t cudnnHandle;
+    CHECK_CUDNN(cudnnCreate(&cudnnHandle));
     float alpha_relu = 1.0f, beta_relu = 0.0f;
     CHECK_CUDNN(cudnnActivationForward(cudnnHandle, fcActDesc, &alpha_relu,
                                         fcTensorDesc, d_fc_output,
