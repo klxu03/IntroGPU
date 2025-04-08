@@ -1,6 +1,6 @@
 NVCC=nvcc
-TARGET=test
-SRC=test.cu
+TARGET=exec
+SRC=image_identification.cu
 CFLAGS=-I/usr/local/cuda/include
 LDFLAGS=-L/usr/local/cuda/lib64 -lcudnn -lcufft -lcublas
 $(TARGET): $(SRC)
