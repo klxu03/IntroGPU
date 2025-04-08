@@ -74,17 +74,21 @@ int main() {
     float scaleFactor = 0.5f;
     frequencyFilter<<<blocks, threadsPerBlock>>>(d_image, NX, NY, threshold, scaleFactor);
     CHECK_CUDA(cudaDeviceSynchronize());
+    // Stage 2: Inverse FFT and Host-side Normalization
     CHECK_CUFFT(cufftExecC2C(fftPlan, d_image, d_image, CUFFT_INVERSE));
-    scaleOutput<<<blocks, threadsPerBlock>>>(d_image, totalElements, 1.0f / (NX * NY));
-    CHECK_CUDA(cudaDeviceSynchronize());
-    cufftComplex *h_normalized = new cufftComplex[INPUT_SIZE];
-    CHECK_CUDA(cudaMemcpy(h_normalized, d_image, INPUT_SIZE * sizeof(cufftComplex), cudaMemcpyDeviceToHost));
+    cufftComplex *h_temp = new cufftComplex[INPUT_SIZE];
+    CHECK_CUDA(cudaMemcpy(h_temp, d_image, INPUT_SIZE * sizeof(cufftComplex), cudaMemcpyDeviceToHost));
+    for (int i = 0; i < INPUT_SIZE; i++) {
+        h_temp[i].x /= (NX * NY);
+        h_temp[i].y /= (NX * NY);
+    }
     float *h_enhanced = new float[INPUT_SIZE];
     for (int i = 0; i < INPUT_SIZE; i++) {
-        h_enhanced[i] = h_normalized[i].x;
+        h_enhanced[i] = h_temp[i].x; // Only the real part is used
     }
-    printStatsFloat(h_enhanced, INPUT_SIZE, "Stage 2 - After Inverse FFT (Normalized)");
-    delete[] h_normalized;
+    printStatsFloat(h_enhanced, INPUT_SIZE, "Stage 2 - After Inverse FFT (Normalized on Host)");
+    delete[] h_temp;
+
 
     // Stage 3: Fully Connected (FC) Layer using cuBLAS
     float *d_fc_input;
